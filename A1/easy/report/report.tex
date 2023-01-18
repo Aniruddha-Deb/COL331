@@ -1,0 +1,56 @@
+\documentclass[12pt]{article}
+\usepackage[a4paper,margin=0.75in]{geometry}
+\usepackage[utf8]{inputenc}
+\usepackage[OT1]{fontenc}
+\usepackage[table,usenames,dvipsnames]{xcolor}
+\usepackage{array}
+\usepackage{varwidth}
+\usepackage{tabularx}
+\usepackage{amsmath}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{graphicx}
+\usepackage{tcolorbox}
+\renewcommand*\familydefault{\sfdefault}
+
+\newtcolorbox{mybox}[3][]
+{
+  colframe = #2!25,
+  colback  = #2!10,
+  coltitle = #2!20!black,  
+  title    = {#3},
+  #1,
+}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,      
+    urlcolor=cyan,
+    pdftitle={Overleaf Example},
+    pdfpagemode=FullScreen,
+}
+
+\title{\textbf{COL331 Assignment 1 (Easy)}}
+\author{Aniruddha Deb \\ \texttt{2020CS10869}}
+\date{February 2023}
+
+\begin{document}
+
+\maketitle
+
+\section{Installing and Testing xv6}
+
+\section{System calls}
+
+% files edited:
+% - Makefile
+% - added user_toggle and print_count files
+% - edited syscall.c to add sys_toggle call
+% - edited sysfile.c to add sys_toggle call implementation
+
+\section{Inter-Process Communication}
+
+\section{Distributed Algorithm}
+
+\end{document}
