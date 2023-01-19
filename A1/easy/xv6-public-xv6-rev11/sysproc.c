@@ -101,3 +101,13 @@ sys_print_count(void)
 {
   return print_count();
 }
+
+int
+sys_add(void)
+{
+  int a,b;
+  argint(0,&a);
+  argint(1,&b);
+  // cprintf("Received %d + %d = %d\n", a, b, a+b);
+  return a+b;
+}

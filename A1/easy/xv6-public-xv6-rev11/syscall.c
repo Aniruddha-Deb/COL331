@@ -105,6 +105,7 @@ extern int sys_write(void);
 extern int sys_uptime(void);
 extern int sys_print_count(void);
 extern int sys_toggle(void);
+extern int sys_add(void);
 
 static int trace_calls = TRACE_OFF;
 
@@ -131,38 +132,41 @@ static int (*syscalls[])(void) = {
 [SYS_mkdir]   sys_mkdir,
 [SYS_close]   sys_close,
 [SYS_print_count]  sys_print_count,
-[SYS_toggle]  sys_toggle
+[SYS_toggle]  sys_toggle,
+[SYS_add] sys_add
 };
 
 static int n_syscalls = NELEM(syscalls);
 static int call_count[NELEM(syscalls)] = {};
 static int syscall_alph_map[] = {
-[SYS_chdir] = 0,
-[SYS_close] = 1,
-[SYS_dup] = 2,
-[SYS_exec] = 3,
-[SYS_exit] = 4,
-[SYS_fork] = 5,
-[SYS_fstat] = 6,
-[SYS_getpid] = 7,
-[SYS_kill] = 8,
-[SYS_link] = 9,
-[SYS_mkdir] = 10,
-[SYS_mknod] = 11,
-[SYS_open] = 12,
-[SYS_pipe] = 13,
-[SYS_print_count] = 14,
-[SYS_read] = 15,
-[SYS_sbrk] = 16,
-[SYS_sleep] = 17,
-[SYS_toggle] = 18,
-[SYS_unlink] = 19,
-[SYS_uptime] = 20,
-[SYS_wait] = 21,
-[SYS_write] = 22
+[SYS_add] = 0,
+[SYS_chdir] = 1,
+[SYS_close] = 2,
+[SYS_dup] = 3,
+[SYS_exec] = 4,
+[SYS_exit] = 5,
+[SYS_fork] = 6,
+[SYS_fstat] = 7,
+[SYS_getpid] = 8,
+[SYS_kill] = 9,
+[SYS_link] = 10,
+[SYS_mkdir] = 11,
+[SYS_mknod] = 12,
+[SYS_open] = 13,
+[SYS_pipe] = 14,
+[SYS_print_count] = 15,
+[SYS_read] = 16,
+[SYS_sbrk] = 17,
+[SYS_sleep] = 18,
+[SYS_toggle] = 19,
+[SYS_unlink] = 20,
+[SYS_uptime] = 21,
+[SYS_wait] = 22,
+[SYS_write] = 23
 };
 
 static char* syscall_name_map[] = {
+"sys_add",
 "sys_chdir",
 "sys_close",
 "sys_dup",
@@ -224,6 +228,7 @@ int
 print_count(void)
 {
   int i;
+  // note that syscalls are 1-indexed and not 0-indexed, so we do n_syscalls-1
   for (i=0; i<n_syscalls-1; i++) {
     cprintf("%s %d\n", syscall_name_map[i], call_count[i]);
   }

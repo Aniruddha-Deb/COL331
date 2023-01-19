@@ -22,6 +22,7 @@
 #define SYS_close  21
 #define SYS_print_count 22
 #define SYS_toggle 23
+#define SYS_add 24
 
 // system call state recording
 #define TRACE_OFF 0
