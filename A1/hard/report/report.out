@@ -1,0 +1,13 @@
+\BOOKMARK [1][-]{section.1}{Install Linux}{}% 1
+\BOOKMARK [2][-]{subsection.1.1}{MacOS}{section.1}% 2
+\BOOKMARK [2][-]{subsection.1.2}{GCP}{section.1}% 3
+\BOOKMARK [1][-]{section.2}{System Calls}{}% 4
+\BOOKMARK [2][-]{subsection.2.1}{registr}{section.2}% 5
+\BOOKMARK [2][-]{subsection.2.2}{fetch}{section.2}% 6
+\BOOKMARK [2][-]{subsection.2.3}{deregistr}{section.2}% 7
+\BOOKMARK [2][-]{subsection.2.4}{Testing}{section.2}% 8
+\BOOKMARK [1][-]{section.3}{Kernel Module}{}% 9
+\BOOKMARK [2][-]{subsection.3.1}{Proc file I/O}{section.3}% 10
+\BOOKMARK [2][-]{subsection.3.2}{Timer}{section.3}% 11
+\BOOKMARK [2][-]{subsection.3.3}{Synchronization}{section.3}% 12
+\BOOKMARK [1][-]{section.4}{Submission Details}{}% 13

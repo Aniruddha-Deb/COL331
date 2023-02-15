@@ -1,0 +1,301 @@
+diff --git a/linux-6.1.6/arch/x86/entry/syscalls/syscall_32.tbl b/linux-6.1.6-my/arch/x86/entry/syscalls/syscall_32.tbl
+index 320480a..c37b70a 100644
+--- a/linux-6.1.6/arch/x86/entry/syscalls/syscall_32.tbl
++++ b/linux-6.1.6-my/arch/x86/entry/syscalls/syscall_32.tbl
+@@ -455,3 +455,7 @@
+ 448	i386	process_mrelease	sys_process_mrelease
+ 449	i386	futex_waitv		sys_futex_waitv
+ 450	i386	set_mempolicy_home_node		sys_set_mempolicy_home_node
++
++451	i386	registr		sys_registr
++452	i386	fetch		sys_fetch
++453	i386	deregistr	sys_deregistr 
+diff --git a/linux-6.1.6/arch/x86/entry/syscalls/syscall_64.tbl b/linux-6.1.6-my/arch/x86/entry/syscalls/syscall_64.tbl
+index c84d126..b89ad2f 100644
+--- a/linux-6.1.6/arch/x86/entry/syscalls/syscall_64.tbl
++++ b/linux-6.1.6-my/arch/x86/entry/syscalls/syscall_64.tbl
+@@ -417,3 +417,8 @@
+ 547	x32	pwritev2		compat_sys_pwritev64v2
+ # This is the end of the legacy x32 range.  Numbers 548 and above are
+ # not special and are not to be used for x32-specific syscalls.
++
++# added for COL331 A1
++548	common	registr		sys_registr
++549	common	fetch		sys_fetch
++550	common	deregistr	sys_deregistr 
+diff --git a/linux-6.1.6/include/linux/pid.h b/linux-6.1.6-my/include/linux/pid.h
+index 343abf2..befc8fb 100644
+--- a/linux-6.1.6/include/linux/pid.h
++++ b/linux-6.1.6-my/include/linux/pid.h
+@@ -70,6 +70,22 @@ struct pid
+ 	struct upid numbers[1];
+ };
+ 
++struct pid_node
++{
++	/* process id */
++	pid_t pid;
++	/* contains pointers to previous and next elements */
++	struct list_head next_prev_list;
++};
++
++struct pid_ctxt_switch
++{
++	/* count of involuntary context switches */
++	unsigned long ninvctxt;
++	/* count of voluntary context switches */
++	unsigned long nvctxt;
++};
++
+ extern struct pid init_struct_pid;
+ 
+ extern const struct file_operations pidfd_fops;
+diff --git a/linux-6.1.6/include/linux/syscalls.h b/linux-6.1.6-my/include/linux/syscalls.h
+index a34b0f9..15ba4f8 100644
+--- a/linux-6.1.6/include/linux/syscalls.h
++++ b/linux-6.1.6-my/include/linux/syscalls.h
+@@ -86,6 +86,7 @@ enum landlock_rule_type;
+ #include <linux/key.h>
+ #include <linux/personality.h>
+ #include <trace/syscall.h>
++#include <linux/pid.h>
+ 
+ #ifdef CONFIG_ARCH_HAS_SYSCALL_WRAPPER
+ /*
+@@ -624,6 +625,12 @@ asmlinkage long sys_futex_waitv(struct futex_waitv *waiters,
+ 				unsigned int nr_futexes, unsigned int flags,
+ 				struct __kernel_timespec __user *timeout, clockid_t clockid);
+ 
++/* COL331 A1 */
++/* kernel/ctx_switch.c */
++asmlinkage int sys_registr(pid_t pid);
++asmlinkage int sys_fetch(struct pid_ctxt_switch *stats);
++asmlinkage int sys_deregistr(pid_t pid);
++
+ /* kernel/hrtimer.c */
+ asmlinkage long sys_nanosleep(struct __kernel_timespec __user *rqtp,
+ 			      struct __kernel_timespec __user *rmtp);
+diff --git a/linux-6.1.6/include/uapi/asm-generic/unistd.h b/linux-6.1.6-my/include/uapi/asm-generic/unistd.h
+index 45fa180..990c09c 100644
+--- a/linux-6.1.6/include/uapi/asm-generic/unistd.h
++++ b/linux-6.1.6-my/include/uapi/asm-generic/unistd.h
+@@ -886,8 +886,17 @@ __SYSCALL(__NR_futex_waitv, sys_futex_waitv)
+ #define __NR_set_mempolicy_home_node 450
+ __SYSCALL(__NR_set_mempolicy_home_node, sys_set_mempolicy_home_node)
+ 
++/* COL331 A1 */
++#define __NR_registr 451
++__SYSCALL(__NR_registr, sys_registr)
++#define __NR_fetch 452
++__SYSCALL(__NR_fetch, sys_fetch)
++#define __NR_deregistr 453
++__SYSCALL(__NR_deregistr, sys_deregistr)
++
++
+ #undef __NR_syscalls
+-#define __NR_syscalls 451
++#define __NR_syscalls 454
+ 
+ /*
+  * 32 bit systems traditionally used different
+diff --git a/linux-6.1.6/kernel/Makefile b/linux-6.1.6-my/kernel/Makefile
+index ebc6922..8abc67a 100644
+--- a/linux-6.1.6/kernel/Makefile
++++ b/linux-6.1.6-my/kernel/Makefile
+@@ -16,6 +16,9 @@ obj-$(CONFIG_USERMODE_DRIVER) += usermode_driver.o
+ obj-$(CONFIG_MODULES) += kmod.o
+ obj-$(CONFIG_MULTIUSER) += groups.o
+ 
++# COL331 A1
++obj-y += ctx_switch.o
++
+ ifdef CONFIG_FUNCTION_TRACER
+ # Do not trace internal ftrace files
+ CFLAGS_REMOVE_irq_work.o = $(CC_FLAGS_FTRACE)
+diff --git a/linux-6.1.6-my/kernel/ctx_switch.c b/linux-6.1.6-my/kernel/ctx_switch.c
+new file mode 100644
+index 0000000..71c7409
+--- /dev/null
++++ b/linux-6.1.6-my/kernel/ctx_switch.c
+@@ -0,0 +1,104 @@
++/*
++ * Context switch tracker, made for COL331 A1
++ * Copyright 2023 Aniruddha Deb
++ *
++ */
++
++#include <linux/types.h>
++#include <linux/errno.h>
++#include <linux/sched.h>
++#include <linux/slab.h>
++#include <linux/pid.h>
++#include <linux/syscalls.h>
++#include <linux/list.h>
++
++#define PID_LIMIT 256
++
++static LIST_HEAD(pid_ll);
++static int n_pids = 0;
++
++SYSCALL_DEFINE1(registr, pid_t, pid)
++{
++        struct pid *pid_struct;
++        struct task_struct *task;
++        struct pid_node *tmp; 
++
++        printk("registr called: attempting to register %d\n", pid);
++        // why negative error codes? 
++        // https://stackoverflow.com/questions/1848729/why-return-a-negative-errno-e-g-return-eio
++        if (pid < 1) return -EINVAL; // -22, invalid arguments
++        if (n_pids >= PID_LIMIT) return -EINVAL; // pid list full
++
++        // ? what if the process has already been added to the list
++        pid_struct = find_get_pid(pid);
++        task = pid_task(pid_struct,PIDTYPE_PID);
++
++        if (task == NULL) return -ESRCH; // -3, no such process
++
++        tmp = kmalloc(sizeof(*tmp), GFP_KERNEL);
++        tmp->pid = pid;
++
++        list_add_tail(&tmp->next_prev_list, &pid_ll);
++        n_pids += 1;
++
++        return 0;
++}
++
++
++SYSCALL_DEFINE1(fetch, struct pid_ctxt_switch*, pid)
++{
++        struct pid_ctxt_switch pid_stats = {.nvctxt = 0, .ninvctxt = 0};
++        struct pid_node *n;
++        struct pid *pid_struct;
++        struct task_struct *task;
++        printk("fetch called: attempting to fetch switches\n");
++
++        list_for_each_entry(n, &pid_ll, next_prev_list) {
++                pid_struct = find_get_pid(n->pid);
++                task = pid_task(pid_struct, PIDTYPE_PID);
++                // what if the pid used was deallocated? task would be null
++                // what if the pid used was reallocated to another process?
++                // We'd have incorrect statistics then...
++                // Does it make sense to return -EINVAL in that case?
++                //
++                // Probably not, as the values are not invalid, + the syscall
++                // would not be very useful if you had to manually remove
++                // entries which were deallocated from it
++                if (task != NULL) {
++                        printk("Adding task stats\n");
++                        pid_stats.nvctxt += task->nvcsw;
++                        pid_stats.ninvctxt += task->nivcsw;
++                }
++        }
++
++        if (copy_to_user(pid, &pid_stats, sizeof(pid_stats)))
++                return -EINVAL;
++        
++        printk("voluntary ctx switches: %lu\n", pid_stats.nvctxt);
++        printk("involuntary ctx switches: %lu\n", pid_stats.ninvctxt);
++
++        return 0;
++}
++
++SYSCALL_DEFINE1(deregistr, pid_t, pid)
++{
++        struct pid_node *n;
++        char found = 0;
++
++        printk("deregistr called: attempting to deregister %d\n", pid);
++        if (pid < 1) return -EINVAL;
++
++        list_for_each_entry(n, &pid_ll, next_prev_list) {
++                if (n->pid == pid) {
++                        found = 1;
++                        break;
++                }
++        }
++
++        if (found) {
++                // remove n from pid_ll
++                list_del(&n->next_prev_list);
++                kfree(n);
++                n_pids -= 1;
++        }
++
++        return 0;
++}
+diff --git a/linux-6.1.6/tools/testing/selftests/sched/Makefile b/linux-6.1.6-my/tools/testing/selftests/sched/Makefile
+index 10c72f1..192f670 100644
+--- a/linux-6.1.6/tools/testing/selftests/sched/Makefile
++++ b/linux-6.1.6-my/tools/testing/selftests/sched/Makefile
+@@ -8,7 +8,7 @@ CFLAGS += -O2 -Wall -g -I./ -I../../../../usr/include/  -Wl,-rpath=./ \
+ 	  $(CLANG_FLAGS)
+ LDLIBS += -lpthread
+ 
+-TEST_GEN_FILES := cs_prctl_test
+-TEST_PROGS := cs_prctl_test
++TEST_GEN_FILES := cs_prctl_test ctx_switch_test
++TEST_PROGS := cs_prctl_test ctx_switch_test
+ 
+ include ../lib.mk
+diff --git a/linux-6.1.6-my/tools/testing/selftests/sched/ctx_switch_test.c b/linux-6.1.6-my/tools/testing/selftests/sched/ctx_switch_test.c
+new file mode 100644
+index 0000000..25db79f
+--- /dev/null
++++ b/linux-6.1.6-my/tools/testing/selftests/sched/ctx_switch_test.c
+@@ -0,0 +1,55 @@
++#include <stdio.h>
++#include <sys/syscall.h>
++#include <stdlib.h>
++#include <unistd.h>
++#include <errno.h>
++
++// TODO integrate this into kselftests when appropriate
++
++// 548-550: x64 codes (registr, fetch, deregistr)
++// 451-453: i686 codes (registr, fetch, deregistr)
++
++struct pid_ctxt_switch {
++    unsigned long ninvctxt;
++    unsigned long nvctxt;
++};
++
++int main(int argc, char** argv) {
++
++    // TODO take the pid's to register from argv
++    int *pids = (int*)malloc(sizeof(int)*(argc-1));
++    char *p;
++    for (int i=1; i<argc; i++) {
++        pids[i-1] = (int)strtol(argv[i], &p, 10);
++        if (syscall(548, pids[i-1]) != 0) {
++            // error
++            printf("ERROR: could not register process %d, syscall returned %d\n", pids[i-1], errno);
++        }
++    }
++
++    printf("Registered all processes\n");
++    
++    // fetch the changes
++    struct pid_ctxt_switch *ctx_switch = (struct pid_ctxt_switch*)malloc(sizeof(struct pid_ctxt_switch));
++    if (syscall(549, ctx_switch) != 0) {
++        printf("ERROR: could not fetch context switches, syscall returned %d\n", errno);
++    }
++
++    // print the switches
++    printf("Voluntary changes: %lu\n", ctx_switch->nvctxt);
++    printf("Involuntary changes: %lu\n", ctx_switch->ninvctxt);
++
++    // deregister processes
++    for (int i=0; i<argc-1; i++) {
++        if (syscall(550, pids[i]) != 0) {
++            printf("ERROR: could not deregister pid %d, syscall returned %d\n", pids[i], errno);
++        }
++    }
++
++    printf("Deregistered all processes\n");
++
++    // free(ctx_switch);
++    free(pids);
++
++    return 0;
++}
