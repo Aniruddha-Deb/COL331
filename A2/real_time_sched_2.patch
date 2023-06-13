@@ -1,0 +1,812 @@
+diff --git a/arch/x86/entry/syscalls/syscall_32.tbl b/arch/x86/entry/syscalls/syscall_32.tbl
+index 320480a8db4f..e61829716229 100644
+--- a/arch/x86/entry/syscalls/syscall_32.tbl
++++ b/arch/x86/entry/syscalls/syscall_32.tbl
+@@ -455,3 +455,15 @@
+ 448	i386	process_mrelease	sys_process_mrelease
+ 449	i386	futex_waitv		sys_futex_waitv
+ 450	i386	set_mempolicy_home_node		sys_set_mempolicy_home_node
++
++# COL331 A2
++451	i386	register_dm  sys_register_dm
++452	i386	register_rm  sys_register_rm  
++453	i386	yield        sys_yield
++454	i386	remove       sys_remove
++455	i386	list         sys_list
++
++456	i386	resource_map	sys_resource_map
++457	i386	start_pcp	sys_start_pcp
++458	i386	pcp_lock	sys_pcp_lock
++459	i386	pcp_unlock	sys_pcp_unlock
+diff --git a/arch/x86/entry/syscalls/syscall_64.tbl b/arch/x86/entry/syscalls/syscall_64.tbl
+index c84d12608cd2..af7c43590d69 100644
+--- a/arch/x86/entry/syscalls/syscall_64.tbl
++++ b/arch/x86/entry/syscalls/syscall_64.tbl
+@@ -417,3 +417,15 @@
+ 547	x32	pwritev2		compat_sys_pwritev64v2
+ # This is the end of the legacy x32 range.  Numbers 548 and above are
+ # not special and are not to be used for x32-specific syscalls.
++
++# COL331 A2
++451	common	register_dm  sys_register_dm
++452	common	register_rm  sys_register_rm  
++453	common	yield        sys_yield
++454	common	remove       sys_remove
++455	common	list         sys_list
++
++456	common	resource_map	sys_resource_map
++457	common	start_pcp	sys_start_pcp
++458	common	pcp_lock	sys_pcp_lock
++459	common	pcp_unlock	sys_pcp_unlock
+diff --git a/include/linux/syscalls.h b/include/linux/syscalls.h
+index a34b0f9a9972..96d9df2904f7 100644
+--- a/include/linux/syscalls.h
++++ b/include/linux/syscalls.h
+@@ -709,6 +709,22 @@ asmlinkage long sys_sched_rr_get_interval(pid_t pid,
+ asmlinkage long sys_sched_rr_get_interval_time32(pid_t pid,
+ 						 struct old_timespec32 __user *interval);
+ 
++/* COL331 A2 */
++/* kernel/sched/dm.c */
++asmlinkage int sys_register_dm(pid_t pid, unsigned int period, 
++                                unsigned int deadline, unsigned int exec_time);
++asmlinkage int sys_register_rm(pid_t pid, unsigned int period, 
++                                unsigned int deadline, unsigned int exec_time);
++
++asmlinkage int sys_yield(pid_t pid);
++asmlinkage int sys_remove(pid_t pid);
++asmlinkage void sys_list();
++
++asmlinkage void sys_resource_map(pid_t pid, unsigned int rid);
++asmlinkage void sys_start_pcp(unsigned int num_processes);
++asmlinkage void sys_pcp_lock(pid_t pid, unsigned int rid);
++asmlinkage void sys_pcp_unlock(pid_t pid, unsigned int rid);
++
+ /* kernel/signal.c */
+ asmlinkage long sys_restart_syscall(void);
+ asmlinkage long sys_kill(pid_t pid, int sig);
+diff --git a/include/uapi/asm-generic/unistd.h b/include/uapi/asm-generic/unistd.h
+index 45fa180cc56a..4fac6fa100ca 100644
+--- a/include/uapi/asm-generic/unistd.h
++++ b/include/uapi/asm-generic/unistd.h
+@@ -886,8 +886,36 @@ __SYSCALL(__NR_futex_waitv, sys_futex_waitv)
+ #define __NR_set_mempolicy_home_node 450
+ __SYSCALL(__NR_set_mempolicy_home_node, sys_set_mempolicy_home_node)
+ 
++/* COL331 A2 */
++#define __NR_register_dm 451
++__SYSCALL(__NR_register_dm, sys_register_dm)
++
++#define __NR_register_rm 452
++__SYSCALL(__NR_register_rm, sys_register_rm)
++
++#define __NR_yield 453
++__SYSCALL(__NR_yield, sys_yield)
++
++#define __NR_remove 454
++__SYSCALL(__NR_remove, sys_remove)
++
++#define __NR_list 455
++__SYSCALL(__NR_list, sys_list)
++
++#define __NR_resource_map 456
++__SYSCALL(__NR_resource_map, sys_resource_map)
++
++#define __NR_start_pcp 457
++__SYSCALL(__NR_start_pcp, sys_start_pcp)
++
++#define __NR_pcp_lock 458
++__SYSCALL(__NR_pcp_lock, sys_pcp_lock)
++
++#define __NR_pcp_unlock 459
++__SYSCALL(__NR_pcp_unlock, sys_pcp_unlock)
++
+ #undef __NR_syscalls
+-#define __NR_syscalls 451
++#define __NR_syscalls 460
+ 
+ /*
+  * 32 bit systems traditionally used different
+diff --git a/kernel/sched/Makefile b/kernel/sched/Makefile
+index 976092b7bd45..94c47677fe50 100644
+--- a/kernel/sched/Makefile
++++ b/kernel/sched/Makefile
+@@ -32,3 +32,4 @@ obj-y += core.o
+ obj-y += fair.o
+ obj-y += build_policy.o
+ obj-y += build_utility.o
++obj-y += dm.o
+diff --git a/kernel/sched/dm.c b/kernel/sched/dm.c
+new file mode 100644
+index 000000000000..ba8585a05ad4
+--- /dev/null
++++ b/kernel/sched/dm.c
+@@ -0,0 +1,676 @@
++/*
++ * Deadline monotonic scheduling for the linux kernel
++ * Copyright 2023 Aniruddha Deb
++ *
++ */
++
++#include <linux/types.h>
++#include <linux/errno.h>
++#include <linux/cpumask.h>
++#include <linux/sched.h>
++#include <linux/semaphore.h>
++#include <uapi/linux/sched/types.h>
++#include <linux/slab.h>
++#include <linux/hrtimer.h>
++#include <linux/ktime.h>
++#include <linux/pid.h>
++#include <linux/syscalls.h>
++#include <linux/list.h>
++#include <linux/kthread.h>
++
++#define DEBUG 1
++
++#define debugk(...) do { if (DEBUG) printk(KERN_CRIT  __VA_ARGS__); } while (0)
++
++// TODO synchronize access to this list
++static DEFINE_MUTEX(task_list_mtx);
++
++// this is going to be in sorted priority order
++static LIST_HEAD(task_list);
++struct task_struct* dispatcher_thread = NULL;
++
++static DEFINE_MUTEX(current_pcb_mtx);
++struct dm_pcb* current_pcb;
++
++#define STATE_RUNNING 1
++#define STATE_SLEEPING 2
++#define STATE_READY 3
++
++#define MAX_RESOURCES 10
++
++struct dm_pcb {
++        struct list_head list_node;
++        struct list_head wait_queue_node;
++	struct task_struct* linux_task;
++	struct hrtimer timer;
++	unsigned int period;
++	unsigned int deadline;
++	unsigned int duration;
++	unsigned int state;
++
++	// negative of deadline
++	int priority;
++	// used to tiebreak between tasks with the same priority
++	int priority_epsilon;
++
++	struct sched_param old_sched_params;
++};
++
++struct resource_t {
++	// we don't use an actual semaphore, as we need to reschedule when a
++	// process is blocked/transfers priority. We emulate the semaphore
++	// using a mutex and a linked list
++	struct mutex mtx;
++	int wait_queue_len;
++	struct list_head wait_queue;
++	int rid;
++	int ceiling;
++
++	struct dm_pcb* owner;
++	int owner_priority_before_acquisition;
++	int owner_priority_epsilon_before_acquisition;
++};
++
++struct resource_t resources[MAX_RESOURCES];
++
++int current_ceiling;
++struct dm_pcb* current_ceiling_setter;
++
++int pcp_started = 0;
++
++int sched_before(struct dm_pcb* pcb1, struct dm_pcb* pcb2) {
++	if (pcb1->priority > pcb2->priority) return 1;
++	if (pcb1->priority == pcb2->priority && pcb1->priority_epsilon > pcb2->priority_epsilon) return 1;
++	return 0;
++}
++
++// TC: O(n)
++struct dm_pcb* pcb_search(pid_t pid) {
++
++	debugk("Searching for pid %u in list\n", pid);
++	struct dm_pcb *pcb;
++	
++	list_for_each_entry(pcb, &task_list, list_node) {
++		if (pcb->linux_task->pid == pid)
++			return pcb;
++	}
++	
++
++	return NULL;
++}
++
++void pcb_insert(struct dm_pcb *data) {
++
++	debugk("Inserting task with pid %u in list\n", data->linux_task->pid);
++	// need to keep the list sorted
++	struct dm_pcb *pcb;
++	
++	list_for_each_entry(pcb, &task_list, list_node) {
++		if (pcb->priority <= data->priority) break;
++	}
++
++	list_add(&data->list_node, pcb->list_node.prev);
++	
++}
++
++unsigned int compute_interference(int i, int t) {
++	unsigned int I = 0;
++	struct dm_pcb *pcb;
++	int j = 0;
++	debugk("Computing interference\n");
++	// is called in a mutex-protected environment anyway so we don't 
++	// need to lock it again
++	list_for_each_entry(pcb, &task_list, list_node) {
++		if (++j >= i) break;
++		I += ((t+pcb->period-1)/pcb->period)*pcb->duration;
++	}
++	return I;
++}
++
++int is_schedulable(void) {
++	
++	// admission bound
++	// task_list has to be sorted in order of the RT process priorities..
++	// the priorities would be determined by the deadlines and periods,
++	// and the process priorities themselves...
++	//
++	// TODO how do we keep them sorted?
++	// use a ~RB-tree with the deadlines as a key~ sorted LL
++	struct dm_pcb *pcb;
++	unsigned int running_t = 0;
++	unsigned int interference = 0;
++
++	int i=0;
++	debugk("Checking schedulability\n");
++	
++	list_for_each_entry(pcb, &task_list, list_node) {
++		unsigned int t = running_t + pcb->duration;
++		int cont = 1;
++		while (cont) {
++			interference = compute_interference(i, t);
++			if (interference + pcb->duration <= t) cont = false;
++			else t = interference + pcb->duration;
++
++			if (t > pcb->deadline) goto unschedulable;
++		}
++		i++;
++		running_t += pcb->duration;
++	}
++	
++	return 1;
++	
++unschedulable:
++	return 0;
++}
++
++void log_pcb(struct dm_pcb* pcb) {
++	char* prompt;
++	if (!pcb) {
++		debugk("[NULL]\n");
++		return;
++	}
++
++	switch(pcb->state) {
++		case STATE_RUNNING: prompt = "RUNNG"; break;
++		case STATE_SLEEPING: prompt = "SLEEP"; break;
++		case STATE_READY: prompt = "READY"; break;
++		default: prompt = "UNK";
++	}
++	debugk("[%u %s(%u,%u,%u)]\n", pcb->linux_task->pid, prompt, pcb->period, 
++		pcb->deadline, pcb->duration);
++}
++
++void log_pid_list(void) {
++
++	struct dm_pcb *pcb;
++	
++	list_for_each_entry(pcb, &task_list, list_node) {
++		log_pcb(pcb);
++		debugk("\tV\n");
++	}
++}
++
++// preferred way of doing things now
++enum hrtimer_restart timer_callback(struct hrtimer* timer) {
++	
++	struct dm_pcb* pcb = container_of(timer, struct dm_pcb, timer);
++	if (pcb) {
++		debugk("Timer callback called by pid %u\n", pcb->linux_task->pid);
++	}
++	else {
++		debugk("ERROR: COULD NOT RETRIEVE PCB OF TIMER\n");
++		return HRTIMER_NORESTART;
++	}
++		
++  	hrtimer_forward(timer, ktime_get(), ms_to_ktime(pcb->period));
++
++	// set the current state to ready and trigger the dispatcher
++	if(current_pcb != pcb) {
++		pcb->state = STATE_READY;
++		wake_up_process(dispatcher_thread);
++	}
++
++	return HRTIMER_RESTART;
++}
++
++void update_tasks(void) {
++	debugk("Updating tasks\n");
++
++	// clean up dead tasks
++
++	if (!pcp_started) {
++		debugk("PCP has not started yet; not scheduling any tasks.\n");
++		return;
++	}
++	// preempt the current task
++	// find the highest priority ready task in our task queue and run it
++	//
++	// ? What if we're already running a task that is in our task queue?
++	// If there's a higher priority ready task in our task queue, then it
++	// implies that it needs to run before the current task, even if the
++	// current task is real time...
++	
++	// find the highest priority (smallest deadline) ready task first
++	struct dm_pcb* pcb;
++	struct dm_pcb* hp_pcb = NULL;
++	
++	list_for_each_entry(pcb, &task_list, list_node) {
++		if (pcb->state == STATE_READY && 
++		    (hp_pcb == NULL || sched_before(pcb, hp_pcb))) {
++			hp_pcb = pcb;
++		}
++	}
++	
++
++	debugk("current_pcb: %p (=NULL: %d)\n", current_pcb, current_pcb==NULL);
++	debugk("hp_pcb: %p (=NULL: %d)\n", hp_pcb, hp_pcb==NULL);
++	debugk("pcb: %p (=NULL: %d)\n", pcb, pcb==NULL);
++
++	// if there's no ready next process, return
++	if (!hp_pcb) {
++		debugk("No ready next process. Returning.\n");
++		return;
++	}
++
++	// check if there's a currently running task with a higher priority than
++	// the highest priority ready task.
++	if (current_pcb && sched_before(current_pcb, hp_pcb)) {
++		debugk("current_pcb has a higher priority than scheduled task. Returning.\n");
++		return;
++	}
++
++	// if there's a running task, we need to preempt it out (it has a lower
++	// priority than hp_pcb)
++	if (current_pcb) {
++		
++		debugk("%u is already running, preempting it out.\n", current_pcb->linux_task->pid);
++		// should we send sigstop here?
++		// yep
++		struct kernel_siginfo info;
++		info.si_signo = SIGSTOP;
++		send_sig_info(SIGSTOP, &info, current_pcb->linux_task);
++
++		struct sched_param sp1;
++		sp1.sched_priority = 0;
++		sched_setscheduler(current_pcb->linux_task, SCHED_NORMAL, &sp1);
++		current_pcb->state = STATE_READY; // recall that this task has
++						   // to call yield() to go to 
++						   // sleep
++		
++	}
++
++	debugk("%u is the task with highest priority, running it\n", hp_pcb->linux_task->pid);
++	// need to run the highest priority task 
++
++	struct kernel_siginfo info;
++	info.si_signo = SIGCONT;
++	send_sig_info(SIGCONT, &info, hp_pcb->linux_task);
++	// wake_up_process(hp_pcb->linux_task);
++
++	struct sched_param sparam;
++	sparam.sched_priority = 99;
++	sched_setscheduler(hp_pcb->linux_task, SCHED_FIFO, &sparam);
++	hp_pcb->state = STATE_RUNNING;
++	
++	current_pcb = hp_pcb;
++
++	debugk("Ran highest priority task. Current running task:\n");
++	log_pcb(current_pcb);
++	debugk("Current pid list:\n");
++	log_pid_list();
++	
++}
++
++int dispatcher_thread_callback(void* data) {
++
++	debugk("Dispatcher thread callback called\n");
++	set_current_state(TASK_INTERRUPTIBLE);
++
++	while (!kthread_should_stop()) {
++		debugk("In dispatcher thread loop. Updating tasks.\n");
++		update_tasks();
++		debugk("Dispatcher updated tasks\n");
++		schedule();
++	}
++
++	set_current_state(TASK_RUNNING);
++
++	return 0;
++}
++
++
++int __remove(pid_t pid) {
++	// not guaranteeing that we're not holding any resources when removed.
++	struct dm_pcb* pcb_struct = pcb_search(pid);
++	if (!pcb_struct) return -EINVAL;
++	list_del(&pcb_struct->list_node);
++	hrtimer_cancel(&pcb_struct->timer);
++	kfree(pcb_struct);
++	debugk("Removed pid %u\n\n", pid);
++	return 0;
++}
++
++int __register_dm(pid_t pid, unsigned int period, unsigned int deadline, 
++		unsigned int duration) {
++
++	debugk("Registering pid %u\n", pid);
++	// __log_pid_list();
++	if (!dispatcher_thread) {
++		// start the dispatcher
++		dispatcher_thread = kthread_run(&dispatcher_thread_callback, NULL, "kdmd");
++		kthread_bind(dispatcher_thread, 0);
++		if (dispatcher_thread) {
++			debugk("Dispatcher thread running with pid %u\n\n", dispatcher_thread->pid);
++		}
++	}
++
++	if (pcb_search(pid)) {
++		debugk("Task with given pid exists. Not re-registering\n");
++		return -EINVAL;
++	}
++
++	struct dm_pcb* new_pcb;
++        new_pcb = (struct dm_pcb*)kmalloc(sizeof(*new_pcb), GFP_KERNEL);
++
++	new_pcb->period   = period;
++	new_pcb->deadline = deadline;
++	new_pcb->duration = duration;
++	new_pcb->priority = -((int)deadline);
++	new_pcb->priority_epsilon = 0;
++
++        struct pid* pid_struct = find_get_pid(pid);
++        struct task_struct* task = pid_task(pid_struct, PIDTYPE_PID);
++	if (task == NULL) {
++		kfree(new_pcb);
++		debugk("Could not find task with given pid\n");
++		return -EINVAL;
++	}
++	new_pcb->linux_task = task;
++
++	pcb_insert(new_pcb);
++	if (!is_schedulable()) {
++		debugk("List of tasks is not schedulable\n");
++		list_del(&new_pcb->list_node);
++		kfree(new_pcb);
++		return -EINVAL;
++	}
++
++	// all real-time registered processes run on cpu 0
++	struct cpumask mask;
++	cpumask_clear(&mask);
++	cpumask_set_cpu(0, &mask);
++	sched_setaffinity(pid, &mask);
++
++	debugk("Registered task with pid %u\n\n", pid);
++
++	return 0;
++}
++
++void __list(void) {
++	struct dm_pcb* pcb;
++	
++	list_for_each_entry(pcb, &task_list, list_node) {
++		printk("PID: %u\tperiod: %u\tdeadline: %u\t%u\n",
++			pcb->linux_task->pid, pcb->period, pcb->deadline, 
++			pcb->duration);
++	}
++	
++}
++
++int __yield(pid_t pid) {
++
++	// what do we do if the currently running task is not the one
++	// that yielded?
++
++	struct dm_pcb* pcb;
++	
++	list_for_each_entry(pcb, &task_list, list_node) {
++		if (pcb->linux_task->pid == pid) {
++			// put task to sleep
++			// need to send signals to make this happen...
++			struct kernel_siginfo info;
++			info.si_signo = SIGSTOP;
++			send_sig_info(SIGSTOP, &info, pcb->linux_task);
++			
++			debugk("Task with pid %u yielded\n", pid);
++			pcb->state = STATE_SLEEPING;
++			if (pcb == current_pcb)
++				current_pcb = NULL;
++			
++			break;
++		}
++	}
++	
++	wake_up_process(dispatcher_thread);
++	return 0;
++}
++
++
++
++SYSCALL_DEFINE4(register_dm, pid_t, pid, unsigned int, period, 
++		unsigned int, deadline, unsigned int, exec_time) {
++
++	return __register_dm(pid, period, deadline, exec_time);
++}
++
++SYSCALL_DEFINE4(register_rm, pid_t, pid, unsigned int, period, 
++		unsigned int, deadline, unsigned int, exec_time) {
++
++	if (period != deadline) return -EINVAL;
++	return __register_dm(pid, deadline, deadline, exec_time);
++}
++
++SYSCALL_DEFINE1(yield, pid_t, pid) {
++	return __yield(pid);
++}
++
++SYSCALL_DEFINE1(remove, pid_t, pid) {
++
++	return __remove(pid);
++}
++
++SYSCALL_DEFINE0(list) {
++	__list();
++	return 0;
++}
++
++void __resource_map(pid_t pid, unsigned int rid) {
++	// we'll use this to calculate the initial priority ceilings of stuff
++	// and to create and chain together resources
++
++	// TODO should we malloc the resources?
++	// I don't think so. Will be difficult to deallocate them once the
++	// process goes away.
++	// or maybe this is something I can do for bonus?
++
++	if (rid >= MAX_RESOURCES) {
++		debugk("rid out of bounds\n");
++		return;
++	}
++	struct dm_pcb* pcb = pcb_search(pid);
++	if (!pcb) {
++		debugk("Unable to lock: given pid is not a real-time task\n");
++		return;
++	}
++
++	if (resources[rid].ceiling == 0) {
++		resources[rid].ceiling = pcb->priority;
++	}
++	else {
++		resources[rid].ceiling = max(resources[rid].ceiling, pcb->priority);
++	}
++}
++
++void __start_pcp(unsigned int num_process) {
++	// this initializes the resource list and the semaphores and stuff...
++	debugk("pcp started\n");
++	pcp_started = 1;
++	for (int i=0; i<MAX_RESOURCES; i++) {
++		// initialize resources[i]
++		mutex_init(&resources[i].mtx);
++		INIT_LIST_HEAD(&resources[i].wait_queue);
++		resources[i].wait_queue_len = 0;
++		resources[i].rid = i;
++
++		resources[i].owner = NULL;
++	}
++
++	// setup periodic timer callbacks
++	struct dm_pcb* pcb;
++	list_for_each_entry(pcb, &task_list, list_node) {
++		pcb->state = STATE_READY;
++		hrtimer_init(&pcb->timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
++		pcb->timer.function = &timer_callback;
++
++		hrtimer_start(&pcb->timer, ms_to_ktime(pcb->period), HRTIMER_MODE_REL);
++	}
++
++	wake_up_process(dispatcher_thread);
++}
++
++void update_system_ceiling(void) {
++	for (int i=0; i<MAX_RESOURCES; i++) {
++		if (resources[i].owner && (resources[i].ceiling > current_ceiling || current_ceiling == 0)) {
++			current_ceiling = resources[i].ceiling;
++			current_ceiling_setter = resources[i].owner;
++		}
++	}
++}
++
++// returns pcb if successfully locked, otherwise the pointer to the task
++// blocking us
++struct dm_pcb* pcp_trylock(struct dm_pcb* pcb, unsigned int rid) {
++
++	struct dm_pcb* blocked_by = resources[rid].owner;
++	if (blocked_by) return blocked_by;
++
++	// resource to acquire is free
++	if (pcb->priority <= current_ceiling && 
++	    pcb != current_ceiling_setter) {
++		// blocked by current_ceiling_setter
++		return current_ceiling_setter;
++	}
++	// either pcb set the csc or it's priority is greater than 
++	// the csc, so we acquire the resource and set csc
++
++	// set owner priority before acquisition in the case of a 
++	// nested resource acquisition; we don't want to go back 
++	// to the original deadline priority, but the priority before
++	// we acquired the resource
++	mutex_lock(&resources[rid].mtx);
++	resources[rid].owner_priority_before_acquisition = pcb->priority;
++	resources[rid].owner_priority_epsilon_before_acquisition = pcb->priority_epsilon;
++	resources[rid].owner = pcb;
++
++	update_system_ceiling();
++	// rescheduling tasks won't be needed here; on acquisition, we
++	// are guaranteed to be running.
++	return NULL;
++}
++
++void __pcp_lock(pid_t pid, unsigned int rid) {
++	if (rid >= MAX_RESOURCES) {
++		debugk("rid out of bounds\n");
++		return;
++	}
++	struct dm_pcb* pcb = pcb_search(pid);
++	if (!pcb) {
++		debugk("Unable to lock: given pid is not a real-time task\n");
++		return;
++	}
++
++	struct dm_pcb* blocked_by = pcp_trylock(pcb, rid);
++
++	if (!blocked_by) return;
++
++	// give our current priority (+epsilon) to the job that's blocking us
++	if (sched_before(pcb, blocked_by)) {
++		blocked_by->priority = pcb->priority;
++		blocked_by->priority_epsilon = pcb->priority_epsilon + 1;
++	}
++	// we don't need to recompute the ceiling as no new acquisitions are 
++	// happening.
++
++	// register in the wait queue
++	// we keep the wait queue sorted by the resource priorities, this makes
++	// resource allocation while unlocking easier.
++	struct dm_pcb* waiting_node = NULL;
++	list_for_each_entry(waiting_node, &resources[rid].wait_queue, wait_queue_node) {
++		if (sched_before(pcb, waiting_node)) break;
++
++	}
++	if (list_entry_is_head(waiting_node, &resources[rid].wait_queue, wait_queue_node)) {
++		list_add(&pcb->wait_queue_node, &resources[rid].wait_queue);
++	}
++	else {
++		list_add(&pcb->wait_queue_node, &waiting_node->wait_queue_node);
++	}
++	resources[rid].wait_queue_len++;
++	// call the scheduler to reschedule the jobs. 
++	// we're sure that this job is blocked and won't run, as it needs to
++	// be scheduled to run. It won't be scheduled as a job exists that
++	// hasn't completed and has a higher priority than it, so it won't
++	// run till we manually give it the resource it needs.
++
++	// TODO wake_up_process is async tho.... aaa, how do we synchronously stop 
++	// the job?
++	wake_up_process(dispatcher_thread);
++}
++
++void __pcp_unlock(pid_t pid, unsigned int rid) {
++	if (rid >= MAX_RESOURCES) {
++		debugk("rid out of bounds\n");
++		return;
++	}
++	struct dm_pcb* pcb = pcb_search(pid);
++	if (!pcb) {
++		debugk("Unable to unlock: given pid is not a real-time task\n");
++		return;
++	}
++
++	// verify that we actually own the resource
++	// note that we cannot call pcp_unlock if we're waiting on the resource,
++	// so we don't need to check the wait list of the resource to see if
++	// we're in there.
++	if (resources[rid].owner != pcb) {
++		debugk("ERROR: pcp_unlock called by non-resource owner\n");
++		return;
++	}
++
++	// reallocate old priority and release locks on resources
++	// the old priority is guaranteed to be the priority of this task just 
++	// before it acquired this resource as once a process acquires a
++	// resource, it does not give it up until it calls pcp_unlock()
++	pcb->priority = resources[rid].owner_priority_before_acquisition;
++	pcb->priority_epsilon = resources[rid].owner_priority_epsilon_before_acquisition;
++	resources[rid].owner = NULL;
++	mutex_unlock(&resources[rid].mtx);
++
++	// recompute current_ceiling
++	update_system_ceiling();
++
++	// now give the resource to the highest priority job in the wait queue,
++	// if it satisfies the resource grant conditions
++
++	struct dm_pcb* waiting_pcb;
++	struct dm_pcb* blocked_by;
++	int allocated = 0;
++	list_for_each_entry(waiting_pcb, &resources[rid].wait_queue, wait_queue_node) {
++		blocked_by = pcp_trylock(waiting_pcb, rid);
++		if (!blocked_by) {
++			allocated = 1;
++			break;
++		}
++	}
++
++	if (!allocated && resources[rid].wait_queue_len > 0) {
++		debugk("ERROR: could not allocate recently freed resource %u to any waiting job\n", rid);
++	}
++	else {
++		list_del(&waiting_pcb->wait_queue_node);
++		resources[rid].wait_queue_len--;
++	}
++	
++	// call the scheduler to reschedule the processes
++	wake_up_process(dispatcher_thread);
++}
++
++SYSCALL_DEFINE2(resource_map, pid_t, pid, unsigned int, rid) {
++	__resource_map(pid, rid);
++	return 0;
++}
++
++SYSCALL_DEFINE1(start_pcp, unsigned int, num_process) {
++	__start_pcp(num_process);
++	return 0;
++}
++
++SYSCALL_DEFINE2(pcp_lock, pid_t, pid, unsigned int, rid) {
++	__pcp_lock(pid, rid);
++	return 0;
++}
++
++SYSCALL_DEFINE2(pcp_unlock, pid_t, pid, unsigned int, rid) {
++	__pcp_unlock(pid, rid);
++	return 0;
++}
+diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
+index d6d488e8eb55..57cbf0592b73 100644
+--- a/kernel/sched/sched.h
++++ b/kernel/sched/sched.h
+@@ -988,6 +988,7 @@ struct rq {
+ #endif
+ 
+ 	struct cfs_rq		cfs;
++        // struct dm_rq            dm;
+ 	struct rt_rq		rt;
+ 	struct dl_rq		dl;
+ 
